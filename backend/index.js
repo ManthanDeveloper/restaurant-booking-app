@@ -1,52 +1,60 @@
 const express = require("express");
 const cookieParser = require("cookie-parser");
-const bodyParser = require('body-parser');
+const bodyParser = require("body-parser");
+const fs = require("fs");
+const path = require("path");
 const app = express();
-require('dotenv').config();
-const mongoose = require("mongoose");
-const Booking = require("./models/Booking");
 
-const mongo_uri = process.env.db_uri;
+require("dotenv").config();
+
 const PORT = 5000;
 const serverURL = process.env.server_url;
 
+// Path to the booking.json file
+const bookingFilePath = path.join(__dirname, "booking.json");
+
+// Middleware
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(cookieParser()); // Use the cookie-parser middleware
+app.use(cookieParser());
 
-// Connect to MongoDB
-mongoose.connect(mongo_uri)
-  .then(() => {
-    console.log("Connected to MongoDB");
-  })
-  .catch((error) => {
-    console.error("MongoDB connection error:", error.message);
-  });
+// Ensure the `booking.json` file exists
+if (!fs.existsSync(bookingFilePath)) {
+  fs.writeFileSync(bookingFilePath, JSON.stringify([])); // Initialize as an empty array
+}
 
-// Root Route
-app.get("/", async (req, res) => {
+// Helper function to read from booking.json
+const readBookings = () => {
+  const data = fs.readFileSync(bookingFilePath, "utf-8");
+  return JSON.parse(data);
+};
+
+// Helper function to write to booking.json
+const writeBookings = (bookings) => {
+  fs.writeFileSync(bookingFilePath, JSON.stringify(bookings, null, 2), "utf-8");
+};
+
+// Root route
+app.get("/", (req, res) => {
   res.send("Welcome To Restaurant App");
 });
 
 // Fetch user-specific bookings
-app.get("/bookings", async (req, res) => {
+app.get("/bookings", (req, res) => {
   const userId = req.cookies.userId;
+
   if (!userId) {
     return res.status(400).json({ error: "User not logged in" });
   }
 
-  try {
-    const userBookings = await Booking.find({ userId });
-    res.json(userBookings);
-  } catch (error) {
-    console.error("Error fetching bookings:", error);
-    res.status(500).json({ error: "Internal server error" });
-  }
+  const bookings = readBookings();
+  const userBookings = bookings.filter((booking) => booking.userId === userId);
+  res.json(userBookings);
 });
 
 // Middleware to validate bookings
-const validateBooking = async (req, res, next) => {
+const validateBooking = (req, res, next) => {
   const { date, time } = req.body;
   const userId = req.cookies.userId;
 
@@ -62,17 +70,20 @@ const validateBooking = async (req, res, next) => {
     return res.status(400).json({ error: "Cannot book for a past date or time." });
   }
 
-  // Check for duplicate bookings
-  const existingBooking = await Booking.findOne({ date, time, userId });
+  const bookings = readBookings();
+  const existingBooking = bookings.find(
+    (booking) => booking.date === date && booking.time === time && booking.userId === userId
+  );
+
   if (existingBooking) {
     return res.status(400).json({ error: "Duplicate booking: This time slot is already booked." });
   }
 
-  next(); // Proceed to the next middleware or route handler
+  next();
 };
 
 // Create new bookings
-app.post("/bookings", validateBooking, async (req, res) => {
+app.post("/bookings", validateBooking, (req, res) => {
   const { date, time, guests, name, contact, contactemail } = req.body;
   const userId = req.cookies.userId;
 
@@ -80,7 +91,9 @@ app.post("/bookings", validateBooking, async (req, res) => {
     return res.status(400).json({ error: "User not logged in" });
   }
 
-  const newBooking = new Booking({
+  const bookings = readBookings();
+  const newBooking = {
+    id: Date.now().toString(), // Generate a unique ID
     date,
     time,
     guests,
@@ -88,19 +101,16 @@ app.post("/bookings", validateBooking, async (req, res) => {
     contact,
     userId,
     contactemail,
-  });
+  };
 
-  try {
-    await newBooking.save();
-    return res.status(201).json(newBooking);
-  } catch (err) {
-    console.error("Error creating booking:", err);
-    return res.status(500).json({ error: "Error creating booking" });
-  }
+  bookings.push(newBooking);
+  writeBookings(bookings);
+
+  res.status(201).json(newBooking);
 });
 
 // Delete specific booking
-app.delete("/bookings/:id", async (req, res) => {
+app.delete("/bookings/:id", (req, res) => {
   const bookingId = req.params.id;
   const userId = req.cookies.userId;
 
@@ -108,18 +118,19 @@ app.delete("/bookings/:id", async (req, res) => {
     return res.status(400).json({ error: "User not logged in" });
   }
 
-  try {
-    const deletedBooking = await Booking.findOneAndDelete({ _id: bookingId, userId });
+  const bookings = readBookings();
+  const bookingIndex = bookings.findIndex(
+    (booking) => booking.id === bookingId && booking.userId === userId
+  );
 
-    if (!deletedBooking) {
-      return res.status(404).json({ error: "Booking not found or unauthorized" });
-    }
-
-    res.json({ message: "Booking deleted successfully" });
-  } catch (error) {
-    console.error("Error deleting booking:", error);
-    res.status(500).json({ error: "Internal server error" });
+  if (bookingIndex === -1) {
+    return res.status(404).json({ error: "Booking not found or unauthorized" });
   }
+
+  bookings.splice(bookingIndex, 1); // Remove the booking
+  writeBookings(bookings);
+
+  res.json({ message: "Booking deleted successfully" });
 });
 
 // Start the server
