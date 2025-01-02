@@ -14,8 +14,12 @@ const serverURL = process.env.server_url;
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-app.use(express.json());
-app.use(cors({ origin: corsURL, credentials: true })); // Allow credentials
+const corsOptions = {
+  origin: corsURL,
+  methods: ["GET", "POST", "DELETE"],
+  credentials: true, // Allow credentials
+};
+app.use(cors(corsOptions)); // Allow credentials
 app.use(cookieParser()); // Use the cookie-parser middleware
 
 mongoose.connect(mongo_uri).then(() => {
