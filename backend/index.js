@@ -1,60 +1,47 @@
 const express = require("express");
+const cors = require("cors");
 const cookieParser = require("cookie-parser");
-const bodyParser = require("body-parser");
-const fs = require("fs");
-const path = require("path");
+const bodyParser = require('body-parser');
 const app = express();
-
-require("dotenv").config();
-
+require('dotenv').config();
+const mongoose = require("mongoose");
+const mongo_uri = process.env.db_uri;
+const Booking = require("./models/Booking");
+const corsURL = process.env.cors_url;
 const PORT = 5000;
 const serverURL = process.env.server_url;
 
-// Path to the booking.json file
-const bookingFilePath = path.join(__dirname, "booking.json");
-
-// Middleware
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
-app.use(express.json());
-app.use(cookieParser());
 
-// Ensure the `booking.json` file exists
-if (!fs.existsSync(bookingFilePath)) {
-  fs.writeFileSync(bookingFilePath, JSON.stringify([])); // Initialize as an empty array
-}
-
-// Helper function to read from booking.json
-const readBookings = () => {
-  const data = fs.readFileSync(bookingFilePath, "utf-8");
-  return JSON.parse(data);
+const corsOptions = {
+  origin: *,
+  methods: ["GET", "POST", "DELETE"],
+  credentials: true, // Allow credentials
 };
+app.use(cors(corsOptions)); // Allow credentials
+app.use(cookieParser()); // Use the cookie-parser middleware
 
-// Helper function to write to booking.json
-const writeBookings = (bookings) => {
-  fs.writeFileSync(bookingFilePath, JSON.stringify(bookings, null, 2), "utf-8");
-};
+mongoose.connect(mongo_uri).then(() => {
+  console.log("Connected to MongoDB");
+})
+  .catch((error) => {
+    console.error("MongoDB connection error:", error.message);
+  });
 
-// Root route
-app.get("/", (req, res) => {
-  res.send("Welcome To Restaurant App");
+app.get("/", async (req, res) => {
+  res.send("Welcome To Restaurent App")
 });
 
-// Fetch user-specific bookings
-app.get("/bookings", (req, res) => {
+// Handle fetching user-specific bookings
+app.get("/bookings", async (req, res) => {
   const userId = req.cookies.userId;
-
-  if (!userId) {
-    return res.status(400).json({ error: "User not logged in" });
-  }
-
-  const bookings = readBookings();
-  const userBookings = bookings.filter((booking) => booking.userId === userId);
+  const userBookings = await Booking.find({ userId });
   res.json(userBookings);
 });
 
-// Middleware to validate bookings
-const validateBooking = (req, res, next) => {
+
+const validateBooking = async (req, res, next) => {
   const { date, time } = req.body;
   const userId = req.cookies.userId;
 
@@ -67,33 +54,26 @@ const validateBooking = (req, res, next) => {
 
   // Check if the date and time are in the past
   if (bookingDate < currentDate) {
+    console.log(Error)
     return res.status(400).json({ error: "Cannot book for a past date or time." });
   }
 
-  const bookings = readBookings();
-  const existingBooking = bookings.find(
-    (booking) => booking.date === date && booking.time === time && booking.userId === userId
-  );
-
+  // Check for duplicate bookings
+  const existingBooking = await Booking.findOne({ date, time, userId });
   if (existingBooking) {
     return res.status(400).json({ error: "Duplicate booking: This time slot is already booked." });
   }
 
-  next();
+  next(); // Proceed to the next middleware or route handler
 };
 
-// Create new bookings
-app.post("/bookings", validateBooking, (req, res) => {
+// Handle creating new bookings
+app.post("/bookings",validateBooking,  async (req, res) => {
   const { date, time, guests, name, contact, contactemail } = req.body;
-  const userId = req.cookies.userId;
+  const userId = req.cookies.userId; // Get userId from cookies
 
-  if (!userId) {
-    return res.status(400).json({ error: "User not logged in" });
-  }
-
-  const bookings = readBookings();
-  const newBooking = {
-    id: Date.now().toString(), // Generate a unique ID
+  // Create new booking object
+  const newBooking = new Booking({
     date,
     time,
     guests,
@@ -101,37 +81,40 @@ app.post("/bookings", validateBooking, (req, res) => {
     contact,
     userId,
     contactemail,
-  };
+  });
 
-  bookings.push(newBooking);
-  writeBookings(bookings);
-
-  res.status(201).json(newBooking);
+  // Save the new booking to the database with additional validation
+  try {
+    await newBooking.save();
+    return res.status(201).json(newBooking);
+  } catch (err) {
+    console.log("Error creating booking:", err);
+    return res.status(500).json({ error: "Error creating booking" });
+  }
 });
 
-// Delete specific booking
-app.delete("/bookings/:id", (req, res) => {
-  const bookingId = req.params.id;
-  const userId = req.cookies.userId;
+// Handle deleting a specific booking
+app.delete("/bookings/:id", async (req, res) => {
+  const bookingId = req.params.id; // Get booking ID from URL
+  const userId = req.cookies.userId; // Get userId from cookies
 
   if (!userId) {
     return res.status(400).json({ error: "User not logged in" });
   }
 
-  const bookings = readBookings();
-  const bookingIndex = bookings.findIndex(
-    (booking) => booking.id === bookingId && booking.userId === userId
-  );
+  try {
+    // Find and delete the booking
+    const deletedBooking = await Booking.findOneAndDelete({ _id: bookingId, userId });
 
-  if (bookingIndex === -1) {
-    return res.status(404).json({ error: "Booking not found or unauthorized" });
+    if (!deletedBooking) {
+      return res.status(404).json({ error: "Booking not found or unauthorized" });
+    }
+
+    res.json({ message: "Booking deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting booking:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
-
-  bookings.splice(bookingIndex, 1); // Remove the booking
-  writeBookings(bookings);
-
-  res.json({ message: "Booking deleted successfully" });
 });
 
-// Start the server
 app.listen(PORT, () => console.log(`Server running on ${serverURL}:${PORT}`));
